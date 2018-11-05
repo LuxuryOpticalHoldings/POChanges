@@ -1,0 +1,758 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:scripting="http://www.mulesoft.org/schema/mule/scripting" xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:file="http://www.mulesoft.org/schema/mule/file" xmlns:metadata="http://www.mulesoft.org/schema/mule/metadata" xmlns:mulexml="http://www.mulesoft.org/schema/mule/xml" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" 
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+http://www.mulesoft.org/schema/mule/xml http://www.mulesoft.org/schema/mule/xml/current/mule-xml.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/scripting http://www.mulesoft.org/schema/mule/scripting/current/mule-scripting.xsd">
+    <db:oracle-config name="RetailProProd" host="10.250.1.11" port="1521" instance="rproods" user="reportuser" password="report" doc:name="Oracle Configuration"/>
+    <db:generic-config name="Generic_Database_Configuration" url="jdbc:sqlserver://10.1.0.15;databaseName=everest_robi;user=sa;password=Everest123" driverClassName="com.microsoft.sqlserver.jdbc.SQLServerDriver" doc:name="Generic Database Configuration"/>
+    <db:oracle-config name="RPRO_TEST" host="10.1.1.168" port="1521" instance="rproods" user="reportuser" password="report" doc:name="Oracle Configuration"/>
+    <file:connector name="File" outputPattern="Sales Order Update Exception Report" writeToDirectory="C:\Users\mschwartz\AnypointStudio\workspace\pochangesretailprotoeverest\src\test\resources\out" autoDelete="false" outputAppend="true" streaming="true" validateConnections="true" doc:name="File"/>
+    <flow name="pochangesretailprotoeverestFlow" processingStrategy="synchronous">
+        <poll doc:name="Poll">
+            <fixed-frequency-scheduler frequency="1000" startDelay="30" timeUnit="SECONDS"/>
+            <db:select config-ref="RPRO_TEST" maxRows="62" fetchSize="62" doc:name="Database">
+                <db:parameterized-query><![CDATA[select po.po_sid, po.po_no, po.store_no, po.shipto_store_no, TO_CHAR(po.created_date, 'MM-DD-YYYY HH24:MI:SS') as CREATED_DATE, TO_CHAR(po.modified_date, 'MM-DD-YYYY HH24:MI:SS') as MODIFIED_DATE, po_item.item_sid, po_item.item_pos, po_item.cost, invn_sbs.alu, invn_sbs.local_upc, po_qty.ord_qty
+from po, po_item , invn_sbs, po_qty
+where po.vend_code in ('ROB', 'MOR') and po.po_sid = po_item.po_sid and po_item.item_sid = invn_sbs.ITEM_SID 
+and po_item.po_sid = po_qty.po_sid and po_item.item_pos = po_qty.item_pos and po.modified_date > TO_DATE('10-24-2018 12:29:00','MM-DD-YYYY HH24:MI:SS') and po.APPROVBY_ID > 0 and length(po.po_no) > 8 and po.held='0'
+order by po_item.po_sid, po_item.ITEM_POS asc, po_item.item_sid]]></db:parameterized-query>
+            </db:select>
+        </poll>
+
+        <set-variable variableName="CURR_PO_SID" value="0" doc:name="CURR_PO_SID"/>
+        <set-variable variableName="test" value="0" doc:name="test"/>
+        <set-variable variableName="INVTOTAMT" value="#[0]" doc:name="Invoice Total Amount"/>
+        <set-variable variableName="RPRO_PAYLOAD" value="#[payload]" doc:name="RPRO Payload"/>
+        <set-variable variableName="DEL_REC_FLG" value="0" doc:name="DeletedRecordsFlag"/>
+
+        <foreach doc:name="For Each">
+            <set-variable variableName="CURR_REC" value="#[payload]" doc:name="CURR_REC"/>
+            <logger message="CURR PO = #[flowVars.CURR_PO_SID] PAYLOAD PO = #[payload.PO_SID]" level="INFO" doc:name="Logger" category="DEBUG"/>
+            <choice doc:name="Choice">
+                <when expression="flowVars.CURR_PO_SID == payload.PO_SID">
+                    <logger message="SAME PO GETTING NEXT RECORD" level="INFO" doc:name="Logger" category="DEBUG"/>
+                    <flow-ref name="LookupPO" doc:name="Flow Reference"/>
+                </when>
+                <otherwise>
+                    <set-variable variableName="CURR_PO_SID" value="#[payload.PO_SID]" doc:name="CURR_PO"/>
+                    <set-variable variableName="DEL_REC_FLG" value="0" doc:name="DeletedRecordsFlag"/>
+                    <flow-ref name="LookupPO" doc:name="Flow Reference"/>
+                </otherwise>
+            </choice>
+        </foreach>
+        <logger message="Done going to poll" level="INFO" doc:name="Logger" category="DEBUG"/>
+    </flow>
+    <sub-flow name="LookupPO">
+        <logger message="#[payload]" level="INFO" doc:name="Logger" category="DEBUG"/>
+        <set-variable variableName="PO_SID" value="#[payload.PO_SID]" doc:name="PO_SID (RPRO)"/>
+        <set-variable variableName="PO_NO" value="#[payload.PO_NO]" doc:name="PO_NO (RPRO)"/>
+
+        <set-variable variableName="PO_QTY" value="#[payload.ORD_QTY]" doc:name="PO_QTY (RPRO)"/>
+        <set-variable variableName="SHIPTOSTORE" value="#[payload.SHIPTO_STORE_NO]" doc:name="SHIPTOSTORE (RPRO)"/>
+        <set-variable variableName="LOCAL_UPC" value="#[payload.LOCAL_UPC]" doc:name="LOCAL_UPC (RPRO)"/>
+        <set-variable variableName="ALU" value="#[payload.ALU]" doc:name="ALU (RPRO)"/>
+        <db:select config-ref="Generic_Database_Configuration" doc:name="Database">
+            <db:parameterized-query><![CDATA[select count (*) as INV_CNT from invoices where po = #[flowVars.PO_NO] and status = '8']]></db:parameterized-query>
+        </db:select>
+
+        <set-variable variableName="INV_COUNT" value="#[message.payload[0]['INV_CNT']]" doc:name="INV_COUNT"/>
+        <choice doc:name="Choice">
+            <when expression="flowVars.INV_COUNT == 1">
+                <db:select config-ref="Generic_Database_Configuration" doc:name="Database">
+                    <db:parameterized-query><![CDATA[select * from invoices where po = #[flowVars.PO_NO] and status = '8']]></db:parameterized-query>
+                </db:select>
+                <choice doc:name="Choice">
+                    <when expression="payload.size()&lt;=0">
+                        <logger message="PO DOES NOT EXIST IN INVOICES -SKIPPING UPDATE  #[payload]" level="INFO" doc:name="Logger - No" category="DEBUG"/>
+                    </when>
+                    <otherwise>
+                        <logger message="PO EXISTS IN INVOICES - UPDATING  #[payload]" level="INFO" doc:name="Logger" category="DEBUG"/>
+                        <set-variable variableName="EVRST_ORDER_NO" value="#[message.payload[0]['ORDER_NO']]" doc:name="ORDER_NO (Everest)"/>
+                        <set-variable variableName="INV_TOTAL_AMOUNT" value="#[message.payload[0]['INV_AMOUNT']]" doc:name="INV_TOTAL_AMOUNT"/>
+                        <flow-ref name="CheckItemCount" doc:name="Check Item Counts"/>
+                        <logger message="Item counts for PO #[flowVars.PO_NO], PO_SID #[flowVars.PO_SID] ORDER NO #[flowVars.EVRST_ORDER_NO] RPRO_ITEM_COUNT #[flowVars.RPRO_ITEM_COUNT] EVRST ITEM COUNT #[flowVars.EVRST_ITEM_COUNT]" level="INFO" category="EXCEPTION" doc:name="Logger"/>
+                        <choice doc:name="Choice">
+                            <when expression="flowVars.RPRO_ITEM_COUNT &gt;= flowVars.EVRST_ITEM_COUNT">
+                                <flow-ref name="UpdateSalesOrder" doc:name="Update/Add Everest Record"/>
+                            </when>
+                            <when expression="flowVars.RPRO_ITEM_COUNT &lt; flowVars.EVRST_ITEM_COUNT">
+                                <choice doc:name="Choice">
+                                    <when expression="flowVars.DEL_REC_FLG == 0">
+                                        <flow-ref name="DeleteItemFromSalesOrder" doc:name="Delete Item From Sales Order"/>
+                                        <flow-ref name="UpdateSalesOrder" doc:name="Update/Add Everest Record"/>
+                                    </when>
+                                    <otherwise>
+                                        <flow-ref name="UpdateSalesOrder" doc:name="Update/Add Everest Record"/>
+                                    </otherwise>
+                                </choice>
+
+                            </when>
+                            <otherwise>
+                                <logger message="Counts don't Match.  Skipping Update " level="INFO" category="EXCEPTION" doc:name="Logger"/>
+                            </otherwise>
+                        </choice>
+                    </otherwise>
+                </choice>
+            </when>
+            <when expression="flowVars.INV_COUNT == 0">
+                <logger message="Sales Order for PO #[flowVars.PO_NO] does not exist.  Skipping to Next Record" level="INFO" category="EXCEPTION" doc:name="Logger - NO PO"/>
+            </when>
+            <otherwise >
+                <logger message="More than one of the same PO #[flowVars.PO_NO] open.  Skipping to Next Record" level="INFO" category="EXCEPTION" doc:name="Logger"/>
+            </otherwise>
+        </choice>
+    </sub-flow>
+    <sub-flow name="CheckItemCount">
+        <logger message="Checking Item Count." level="INFO" doc:name="Logger" category="DEBUG"/>
+        <db:select config-ref="RPRO_TEST" doc:name="Database">
+            <db:parameterized-query><![CDATA[select count(*) as RPRO_COUNT from PO_ITEM where PO_SID = #[flowVars.PO_SID]]]></db:parameterized-query>
+        </db:select>
+        <set-variable variableName="RPRO_ITEM_COUNT" value="#[message.payload[0]['RPRO_COUNT']]" doc:name="ITEM COUNT (RPRO)"/>
+
+        <db:select config-ref="Generic_Database_Configuration" doc:name="Database">
+            <db:parameterized-query><![CDATA[select count(*) as EVRST_ITEM_COUNT from x_invoic where order_no = #[flowVars.EVRST_ORDER_NO] and status = '8']]></db:parameterized-query>
+        </db:select>
+        <set-variable variableName="EVRST_ITEM_COUNT" value="#[message.payload[0]['EVRST_ITEM_COUNT']]" doc:name="ITEM COUNT (Everest)"/>
+    </sub-flow>
+    <sub-flow name="UpdateSalesOrder">
+        <logger message="Updating Sales Order for PO #[flowVars.PO_NO] Order #[flowVars.EVRST_ORDER_NO] Item #[flowVars.LOCAL_UPC] QTY #[flowVars.PO_QTY]" level="INFO" category="DEBUG" doc:name="Logger"/>
+        <db:select config-ref="Generic_Database_Configuration" doc:name="Database">
+            <db:parameterized-query><![CDATA[select count(*) as UPD_SALES_CNT from x_invoic where order_no = #[flowVars.EVRST_ORDER_NO] and status = '8' and item_code = #[flowVars.LOCAL_UPC]]]></db:parameterized-query>
+        </db:select>
+        <set-variable variableName="UPD_SALE_CNT" value="#[message.payload[0]['UPD_SALES_CNT']]" doc:name="UPD_SALE_CNT (Everest)"/>
+        <set-variable variableName="LK_ALU" value="0" doc:name="Lookup ALU"/>
+        <set-variable variableName="AMOUNT" value="#[0]" doc:name="AMOUNT"/>
+        <logger message="UPD_SALE_CNT = #[flowVars.UPD_SALE_CNT]" level="INFO" doc:name="Logger" category="DEBUG"/>
+        <choice doc:name="Choice">
+            <when expression="flowVars.UPD_SALE_CNT &lt;= 0">
+                <logger message="Item not  found on Invoice.  Looking up ALU #[flowVars.ALU]" level="INFO" category="DEBUG" doc:name="Logger - Check ALU"/>
+                <db:select config-ref="Generic_Database_Configuration" doc:name="Database">
+                    <db:parameterized-query><![CDATA[select * from items where CUSTCHAR4 = #[flowVars.ALU]]]></db:parameterized-query>
+                </db:select>
+                <choice doc:name="Choice">
+                    <when expression="payload.size()&lt;=0">
+                        <logger message="Item not found by ALU #[flowVars.ALU]" level="INFO" category="DEBUG" doc:name="Logger"/>
+                    </when>
+                    <otherwise>
+                        <set-variable variableName="ITEMNO_ALU" value="#[message.payload[0]['ITEMNO']]" doc:name="ITEMNO_ALU"/>
+                        <db:select config-ref="Generic_Database_Configuration" doc:name="Database">
+                            <db:parameterized-query><![CDATA[select count(*) as UPD_SALES_CNT from x_invoic where order_no = #[flowVars.EVRST_ORDER_NO] and status = '8' and item_code = #[flowVars.ITEMNO_ALU]]]></db:parameterized-query>
+                        </db:select>
+                        <set-variable variableName="UPD_SALE_CNT" value="#[message.payload[0]['UPD_SALES_CNT']]" doc:name="UPD_SALE_CNT"/>
+                    </otherwise>
+                </choice>
+                <set-variable variableName="LK_ALU" value="1" doc:name="Lookup ALU"/>
+
+                <logger message="update sales cnt = #[flowVars.UPD_SALE_CNT]" level="INFO" doc:name="Logger" category="DEBUG"/>
+            </when>
+            <otherwise>
+                <logger message="Item found on Invoice.  Going to update Record" level="INFO" category="DEBUG" doc:name="Logger - Update"/>
+            </otherwise>
+        </choice>
+        <choice doc:name="Choice">
+            <when expression="flowVars.UPD_SALE_CNT == 1">
+                <logger message="Update Record" level="INFO" doc:name="Update Record" category="DEBUG"/>
+                <set-variable variableName="UPD_TOT_AMT" value="#[0]" doc:name="Update Total Amount"/>
+                <choice doc:name="Choice">
+                    <when expression="flowVars.LK_ALU == 1">
+                        <db:select config-ref="Generic_Database_Configuration" doc:name="Database - ALU">
+                            <db:parameterized-query><![CDATA[select cast(round(AVG_COST,2) as numeric(36,2)) as ORD_AVG_COST, cast(round(LAST_COST,2) as numeric(36,2)) as ORD_LAST_COST, itemno, avg_cost, cast(COST as numeric(36,6)) as ORD_C_COST, last_cost, sale_meas, stock_meas from items where custchar4 = #[flowVars.ALU]]]></db:parameterized-query>
+                        </db:select>
+                        <set-variable variableName="ITEM_CODE" value="#[message.payload[0]['ITEMNO']]" doc:name="ITEM_CODE"/>
+                    </when>
+                    <otherwise>
+                        <db:select config-ref="Generic_Database_Configuration" doc:name="Database  - UPC">
+                            <db:parameterized-query><![CDATA[select cast(round(AVG_COST,2) as numeric(36,2)) as ORD_AVG_COST, cast(round(LAST_COST,2) as numeric(36,2)) as ORD_LAST_COST, itemno, avg_cost, cast(COST as numeric(36,6)) as ORD_C_COST, last_cost, sale_meas, stock_meas from items where itemno = #[flowVars.LOCAL_UPC]]]></db:parameterized-query>
+                        </db:select>
+                        <set-variable variableName="ITEM_CODE" value="#[message.payload[0]['ITEMNO']]" doc:name="ITEM_CODE"/>
+                    </otherwise>
+                </choice>
+                <set-variable variableName="AVG_COST" value="#[message.payload[0]['AVG_COST']]" doc:name="AVG_COST"/>
+                <set-variable variableName="LAST_COST" value="#[message.payload[0]['LAST_COST']]" doc:name="LAST_COST"/>
+                <choice doc:name="Choice">
+                    <when expression="flowVars.AVG_COST &lt;= 0">
+                        <logger level="INFO" doc:name="Logger - LAST_COST" category="DEBUG" message="Last Cost"/>
+                        <set-variable variableName="EVRST_COST" value="#[flowVars.LAST_COST]" doc:name="EVRST_COST_L"/>
+                        <set-variable variableName="ITEM_PRICE" value="#[message.payload[0]['ORD_LAST_COST']]" doc:name="ITEM_PRICE (Everest)"/>
+                    </when>
+                    <otherwise>
+                        <logger level="INFO" doc:name="Logger - AVG_COST" category="DEBUG" message="AVG_Cost"/>
+                        <set-variable variableName="EVRST_COST" value="#[flowVars.AVG_COST]" doc:name="EVRST_COST"/>
+                        <set-variable variableName="ITEM_PRICE" value="#[message.payload[0]['ORD_AVG_COST']]" doc:name="ITEM PRICE (Everest)"/>
+                    </otherwise>
+                </choice>
+                <set-variable variableName="ITEM_COST" value="#[message.payload[0]['ORD_C_COST']]" doc:name="ITEM_COST (Everest)"/>
+                <db:select config-ref="Generic_Database_Configuration" doc:name="Database">
+                    <db:parameterized-query><![CDATA[select * from x_invoic where order_no = #[flowVars.EVRST_ORDER_NO] and item_code = #[flowVars.ITEM_CODE] and status = '8']]></db:parameterized-query>
+                </db:select>
+                <set-variable variableName="EVRST_ITEM_QTY" value="#[message.payload[0]['ITEM_QTY']]" doc:name="EVRST_ITEM_QTY"/>
+                <set-variable variableName="QTY_SHIP" value="#[message.payload[0]['QTY_SHIP']]" doc:name="QTY_SHIP"/>
+                <choice doc:name="Choice">
+                    <when expression="flowVars.QTY_SHIP &gt; flowVars.PO_QTY">
+                        <logger message="Qty Shipped is greater than Qty Ordered.  SKIPPING..." level="INFO" category="EXCEPTION" doc:name="Logger - Ship Exception"/>
+                    </when>
+                    <otherwise>
+                        <logger message="Logger - Plus" level="INFO" doc:name="Logger - Plus" category="DEBUG"/>
+                        <scripting:component doc:name="Groovy">
+                            <scripting:script engine="Groovy"><![CDATA[flowVars.ITEM_COST = flowVars.ITEM_COST.toDouble().round(4) * flowVars.PO_QTY;
+flowVars.AMOUNT =  flowVars.ITEM_PRICE * flowVars.PO_QTY
+]]></scripting:script>
+                        </scripting:component>
+                        <db:update config-ref="Generic_Database_Configuration" doc:name="Update X_INVOIC">
+                            <db:parameterized-query><![CDATA[update x_invoic set item_qty = #[flowVars.PO_QTY], cost = #[flowVars.EVRST_COST], amount = #[flowVars.AMOUNT], item_price = #[flowVars.ITEM_PRICE], c_cost = #[flowVars.ITEM_COST], item_pr_fex = #[flowVars.ITEM_PRICE], amount_fex = #[flowVars.AMOUNT], last_cost = #[flowVars.LAST_COST], avg_cost = #[flowVars.EVRST_COST], stk_item_qty = #[flowVars.PO_QTY] where order_no = #[flowVars.EVRST_ORDER_NO] and status  = '8' and item_code = #[flowVars.ITEM_CODE]]]></db:parameterized-query>
+                        </db:update>
+                        <db:select config-ref="Generic_Database_Configuration" doc:name="Get Everest Customer Code">
+                            <db:parameterized-query><![CDATA[select distinct CUST_CODE from ADDRESS where CUSTCHAR14 = #[flowVars.SHIPTOSTORE]]]></db:parameterized-query>
+                        </db:select>
+
+                        <logger message="after customer" level="INFO" doc:name="Logger" category="DEBUG"/>
+                        <set-variable variableName="CUST_CODE" value="#[message.payload[0]['CUST_CODE']]" doc:name="CUST_CODE (Everest)"/>
+                        <logger message="after cust code variable" level="INFO" doc:name="Logger" category="DEBUG"/>
+                        <db:select config-ref="Generic_Database_Configuration" doc:name="Database">
+                            <db:parameterized-query><![CDATA[select cast(sum(amount_fex) as numeric(36,2))as C_COST from x_invoic where order_no = #[flowVars.EVRST_ORDER_NO] and status = '8']]></db:parameterized-query>
+                        </db:select>
+
+                        <set-variable variableName="INV_UPD_TOT" value="#[message.payload[0]['C_COST']]" doc:name="INV_UPD_TOT"/>
+                        <db:update config-ref="Generic_Database_Configuration" doc:name="Update INVOICES">
+                            <db:parameterized-query><![CDATA[update INVOICES set EXEMPT = #[flowVars.INV_UPD_TOT], INV_AMOUNT = #[flowVars.INV_UPD_TOT], EXEMPT_FEX = #[flowVars.INV_UPD_TOT], INV_AMT_FEX = #[flowVars.INV_UPD_TOT] where STATUS = '8' and DOC_NO = #[flowVars.EVRST_ORDER_NO] and ORDER_NO = #[flowVars.EVRST_ORDER_NO] and CUST_CODE = #[flowVars.CUST_CODE]]]></db:parameterized-query>
+                        </db:update>
+                        <db:update config-ref="Generic_Database_Configuration" doc:name="Update TRANHIST 5036 Record ">
+                            <db:parameterized-query><![CDATA[update tranhist set amount = #[flowVars.INV_UPD_TOT] where doc_no  = #[flowVars.EVRST_ORDER_NO] and user_id = 'ITAUT' and func_id = '5036']]></db:parameterized-query>
+                        </db:update>
+
+                    </otherwise>
+                </choice>
+            </when>
+            <when expression="flowVars.UPD_SALE_CNT &lt;= 0">
+                <logger message="Adding Item to Sales Order" level="INFO" doc:name="Add Item" category="DEBUG"/>
+                <db:select config-ref="Generic_Database_Configuration" doc:name="Get Everest Customer Code">
+                    <db:parameterized-query><![CDATA[select distinct CUST_CODE from ADDRESS where CUSTCHAR14 = #[flowVars.SHIPTOSTORE]]]></db:parameterized-query>
+                </db:select>
+                <set-variable variableName="CUST_CODE" value="#[message.payload[0]['CUST_CODE']]" doc:name="CUST_CODE"/>
+                <flow-ref name="AddItemToSalesOrder" doc:name="Add Item to Sales Order"/>
+                <flow-ref name="CheckItemCount" doc:name="Check Item Counts"/>
+                <choice doc:name="Choice">
+                    <when expression="flowVars.RPRO_ITEM_COUNT &lt; flowVars.EVRST_ITEM_COUNT">
+                        <flow-ref name="DeleteItemFromSalesOrder" doc:name="Delete Item From Sales Order"/>
+                        <db:select config-ref="Generic_Database_Configuration" doc:name="Get Customer Code">
+                            <db:parameterized-query><![CDATA[select distinct CUST_CODE from ADDRESS where CUSTCHAR14 = #[flowVars.SHIPTOSTORE]]]></db:parameterized-query>
+                        </db:select>
+                        <set-variable variableName="CUST_CODE" value="#[message.payload[0]['CUST_CODE']]" doc:name="CUST_CODE"/>
+                        <db:select config-ref="Generic_Database_Configuration" doc:name="Database">
+                            <db:parameterized-query><![CDATA[select cast(sum(amount_fex) as numeric(36,2))as C_COST from x_invoic where order_no = #[flowVars.EVRST_ORDER_NO] and status = '8']]></db:parameterized-query>
+                        </db:select>
+                        <set-variable variableName="DEL_INV_TOT" value="#[message.payload[0]['C_COST']]" doc:name="DEL_INV_TOT"/>
+                        <db:update config-ref="Generic_Database_Configuration" doc:name="Update Invoice Record">
+                            <db:parameterized-query><![CDATA[update INVOICES set EXEMPT = #[flowVars.DEL_INV_TOT], INV_AMOUNT = #[flowVars.DEL_INV_TOT], EXEMPT_FEX = #[flowVars.DEL_INV_TOT], INV_AMT_FEX = #[flowVars.DEL_INV_TOT] where STATUS = '8' and DOC_NO = #[flowVars.EVRST_ORDER_NO] and ORDER_NO = #[flowVars.EVRST_ORDER_NO] and CUST_CODE = #[flowVars.CUST_CODE]]]></db:parameterized-query>
+                        </db:update>
+                        <db:update config-ref="Generic_Database_Configuration" doc:name="Update TRANHIST 5036 Record">
+                            <db:parameterized-query><![CDATA[update tranhist set amount = #[flowVars.DEL_INV_TOT] where doc_no  = #[flowVars.EVRST_ORDER_NO] and user_id = 'ITAUT' and func_id = '5036']]></db:parameterized-query>
+                        </db:update>
+                    </when>
+                    <otherwise>
+                        <logger message="Added Item.  Continue..." level="INFO" category="DEBUG" doc:name="Logger - Debugger"/>
+                    </otherwise>
+                </choice>
+
+            </when>
+            <otherwise>
+                <logger message="Bypass Record" level="INFO" doc:name="Bypass Record" category="DEBUG"/>
+            </otherwise>
+        </choice>
+    </sub-flow>
+    <sub-flow name="AddItemToSalesOrder">
+        <logger message="Adding Item #[flowVars.LOCAL_UPC] for PO #[flowVars.PO_NO]  QTY #[flowVars.LOCAL_UPC] ORDER NO #[flowVars.EVRST_ORDER_NO]" level="INFO" category="DEBUG" doc:name="Logger"/>
+        <db:select config-ref="Generic_Database_Configuration" doc:name="Database">
+            <db:parameterized-query><![CDATA[select max(sequence) + 1 as ITEM_POS from x_invoic where order_no = #[flowVars.EVRST_ORDER_NO] and status = '8']]></db:parameterized-query>
+        </db:select>
+        <set-variable variableName="ITEM_POS" value="#[message.payload[0]['ITEM_POS']]" doc:name="ITEM_POS (Everest)"/>
+        <db:select config-ref="Generic_Database_Configuration" doc:name="Everest Item by Local_UPC">
+            <db:parameterized-query><![CDATA[select cast(round(AVG_COST,2) as numeric(36,2)) as ORD_AVG_COST, cast(round(LAST_COST,2) as numeric(36,2)) as ORD_LAST_COST, itemno, avg_cost, cast(COST as numeric(36,6)) as ORD_C_COST, last_cost, sale_meas, stock_meas from items where itemno = #[flowVars.LOCAL_UPC]]]></db:parameterized-query>
+        </db:select>
+        <choice doc:name="Choice">
+            <when expression="payload.size()&lt;=0">
+                <logger message="Local UPC Not Found.  Looking up Item by ALU" level="INFO" doc:name="Look Up Item by ALU" category="DEBUG"/>
+                <db:select config-ref="Generic_Database_Configuration" doc:name="Everest Item by ALU">
+                    <db:parameterized-query><![CDATA[select cast(round(AVG_COST,2) as numeric(36,2)) as ORD_AVG_COST, cast(round(LAST_COST,2) as numeric(36,2)) as ORD_LAST_COST, itemno, avg_cost, cast(COST as numeric(36,6)) as ORD_C_COST, last_cost, sale_meas, stock_meas from items where custchar4 = #[flowVars.ALU]]]></db:parameterized-query>
+                </db:select>
+                <choice doc:name="Choice">
+                    <when expression="payload.size()&lt;=0">
+                        <logger message="Item Not Found in Everest - Bypassing Record" level="INFO" doc:name="Item Not Found in Everest" category="DEBUG"/>
+                    </when>
+                    <otherwise>
+                        <logger message="Item Found by ALU - Going to Add Record to Sales Order" level="INFO" doc:name="Item Found in Everest" category="DEBUG"/>
+                        <set-variable variableName="ITEMNO" value="#[message.payload[0]['ITEMNO']]" doc:name="ITEM_NO (Everest)"/>
+                        <set-variable variableName="AVG_COST" value="#[message.payload[0]['AVG_COST']]" doc:name="AVG_COST (Everest)"/>
+                        <set-variable variableName="LAST_COST" value="#[message.payload[0]['LAST_COST']]" doc:name="LAST_COST (Everest)"/>
+                        <set-variable variableName="SALE_MEAS" value="#[message.payload[0]['SALE_MEAS']]" doc:name="SALE_MEAS (Everest)"/>
+                        <flow-ref name="CreatingXInvoiceRecord" doc:name="Creating Xinvoice Record"/>
+                    </otherwise>
+                </choice>
+            </when>
+            <otherwise >
+                <logger message="Item Found by LOCAL_UPC - Going to Add Record to Sales Order" level="INFO" doc:name="Item Found in Everest" category="DEBUG"/>
+                <set-variable variableName="ITEMNO" value="#[message.payload[0]['ITEMNO']]" doc:name="ITEM_NO (Everest)"/>
+                <set-variable variableName="AVG_COST" value="#[message.payload[0]['AVG_COST']]" doc:name="AVG_COST (Everest)"/>
+                <set-variable variableName="LAST_COST" value="#[message.payload[0]['LAST_COST']]" doc:name="LAST_COST (Everest)"/>
+                <set-variable variableName="SALE_MEAS" value="#[message.payload[0]['SALE_MEAS']]" doc:name="SALE_MEAS (Everest)"/>
+                <flow-ref name="CreatingXInvoiceRecord" doc:name="Creating Xinvoice record"/>
+            </otherwise>
+        </choice>
+    </sub-flow>
+        <sub-flow name="CreatingXInvoiceRecord">
+        <logger message="***  CREATING X_INVOICE RECORD ***" level="INFO" doc:name="Logger - DEBUG" category="DEBUG"/>
+        <set-variable variableName="DESC_TYPE" value="1" doc:name="DESC_TYPE"/>
+        <set-variable variableName="XINV_COST" value="#[0]" doc:name="XINV_COST"/>
+        <set-variable variableName="XINV_C_COST" value="#[0]" doc:name="XINV_C_COST"/>
+        <set-variable variableName="ITEM_COST" value="#[0]" doc:name="ITEM_COST"/>
+        <set-variable variableName="AMOUNT" value="#[0]" doc:name="AMOUNT"/>
+        <choice doc:name="Choice">
+            <when expression="flowVars.AVG_COST &lt;= 0">
+                <choice doc:name="Choice">
+                    <when expression=" flowVars.LAST_COST &lt; 0">
+                        <set-variable variableName="CPY_PAYLOAD" value="#[payload]" doc:name="CPY_PAYLOAD"/>
+                        <set-payload value="--- There is no Average or Last Cost for Item #[flowVars['ITEMNO']] Order Number #[flowVars['ORDER_NO']]  Skipping record on PO #[flowVars['PO_NO'] + '\n']" doc:name="Set Payload"/>
+                        <file:outbound-endpoint path="src/test/resources/out" connector-ref="File" responseTimeout="10000" doc:name="File"/>
+                        <logger message="**** Average Cost and Last Cost are less than or equal to zero for Item #[flowVars.ITEMNO] Order Number #[flowVars.ORDER_NO] Not adding to sales order ****" level="INFO" category="EXCEPTION" doc:name="Logger - EXCEPTION"/>
+                        <set-payload value="#[flowVars.CPY_PAYLOAD]" doc:name="Set Payload"/>
+                    </when>
+                    <otherwise>
+                        <set-variable variableName="EVRST_COST" value="#[flowVars.LAST_COST]" doc:name="EVRST_COST_L"/>
+                        <set-variable variableName="ITEM_PRICE" value="#[message.payload[0]['ORD_LAST_COST']]" doc:name="ITEM_PRICE (Everest)"/>
+                        <set-variable variableName="ITEM_COST" value="#[message.payload[0]['ORD_C_COST']]" doc:name="ITEM_COST (Everest)"/>
+                        <set-variable variableName="TAX_TABLE" value="Exempt" doc:name="TAX_TABLE (Everest)"/>
+                        <set-variable variableName="MEAS_CODE" value="#[message.payload[0]['SALE_MEAS']]" doc:name="MEAS_CODE (Everest)"/>
+                        <set-variable variableName="STK_MEAS" value="#[message.payload[0]['STOCK_MEAS']]" doc:name="STK_MEAS  (Everest)"/>
+                        <db:select config-ref="Generic_Database_Configuration" doc:name="Get Customer Record">
+                            <db:parameterized-query><![CDATA[SELECT [ACTIVE]
+      ,[CUST_CODE]
+      ,[NAME]
+      ,[SALESPERSO]
+      ,[PAY_TERMS]
+      ,[CR_LIMIT]
+      ,[DELIV_METH]
+      ,[CUR_CR]
+      ,[CUR_DR]
+      ,[ADV_AVAIL]
+      ,[UNPOST_DR]
+      ,[UNPOST_CR]
+      ,[CUR_BAL_DT]
+      ,[DEP_CODE]
+      ,[CUST_LEVEL]
+      ,[MDESC]
+      ,[ONHOLD]
+      ,[SHIPCODE]
+      ,[CONTCODE]
+      ,[BILLCODE]
+      ,[LI_AMT]
+      ,[LI_DOC]
+      ,[LI_DATE]
+      ,[LR_AMT]
+      ,[LR_DOC]
+      ,[LR_DATE]
+      ,[LP_AMT]
+      ,[LP_DOC]
+      ,[LP_DOC_TYP]
+      ,[LP_DATE]
+      ,[LP_PAYTYPE]
+      ,[LP_REF]
+      ,[NUM_INV]
+      ,[NUM_RET]
+      ,[INV_LIFE]
+      ,[RET_LIFE]
+      ,[DAYS_DUE]
+      ,[POPCUSTCOM]
+      ,[WEB_CUST]
+      ,[FCOMPMTHD]
+      ,[FINRATE]
+      ,[FDAYPAST]
+      ,[FEXCLUDE]
+      ,[FMINBAL]
+      ,[AUTOHLDD]
+      ,[AUTOHLDDA]
+      ,[AUTOHLDC]
+      ,[AUTOHLDCA]
+      ,[HOLDNOTE]
+      ,[CREATED_BY]
+      ,[CREAT_DATE]
+      ,[AO_TERMS]
+      ,[AO_ONACNT]
+      ,[AO_COD]
+      ,[AO_PREPAY]
+      ,[ONACNT]
+      ,[PREPAY]
+      ,[COD]
+      ,[CURRCODE]
+      ,[OP_BAL_FEX]
+      ,[CUR_CR_FEX]
+      ,[CUR_DR_FEX]
+      ,[ADV_AV_FEX]
+      ,[UNPOSTDRFEX]
+      ,[UNPOSTCRFEX]
+      ,[CR_LIMIT_FEX]
+      ,[LI_AMT_FEX]
+      ,[LR_AMT_FEX]
+      ,[LP_AMT_FEX]
+      ,[IS_REMESUR]
+      ,[REM_RATE]
+      ,[REM_DATE]
+      ,[TAX_ID]
+      ,[CUSTCLASS]
+      ,[ONLYBILLTO]
+      ,[ADDSHIPTO]
+      ,[MODSHIPTO]
+      ,[ITMTRKGRP]
+      ,[ITMTRKSEL]
+      ,[QTYPAID_IN]
+      ,[MODBILLTO]
+      ,[PAY_CYCLE]
+      ,[INV_LIFE_FEX]
+      ,[INV_RET_FEX]
+      ,[INV_RET]
+      ,[OP_BAL]
+      ,[SQ_POLICY_CODE]
+      ,[SO_POLICY_CODE]
+      ,[SI_POLICY_CODE]
+      ,[CQ_POLICY_CODE]
+      ,[CO_POLICY_CODE]
+      ,[CM_POLICY_CODE]
+      ,[FULLPAY]
+      ,[HAND_OFF]
+      ,[ALLOW_BCK_ORD]
+      ,[SOURCE_CODE]
+      ,[CATEGORY_CODE]
+      ,[AUTO_HOLD]
+      ,[REQUIREPO]
+      ,[SAVE_CREDIT_CARD_DETAILS]
+      ,[BLIND_SHIPMENT]
+      ,[CUSTOMER_LOGO]
+      ,[JOB_TITLE]
+      ,[EVEREST_MODE_CREATEDIN]
+      ,[IS_LOCKED]
+      ,[LOCK_NOTE]
+      ,[PGID]
+      ,[DW_UPDATE_DATE]
+      ,[DW_UPDATED]
+      ,[WEB_SITE]
+      ,[CUST_PG_PREFERENCE]
+      ,[AUTO_PUT_ON_HOLD]
+      ,[SYNC_STATUS]
+      ,[LOCKOUT_REASON]
+      ,[ANSWER_ENCRYPTION]
+  FROM [CUST] WHERE CUST_CODE = #[flowVars.CUST_CODE]]]></db:parameterized-query>
+                        </db:select>
+                        <set-variable variableName="DEP" value="#[message.payload[0]['DEP_CODE']]" doc:name="DEP (Everest)"/>
+                        <set-variable variableName="SALES_REP" value="#[message.payload[0]['SALESPERSO']]" doc:name="SALES_REP (Everest)"/>
+                        <scripting:component doc:name="Groovy">
+                            <scripting:script engine="Groovy"><![CDATA[System.out.println("Inserting Record into Everest X_Invoic Table ...");
+
+System.out.println("SEQUENCE - " + flowVars['ITEM_POS'] + " ORDER_NO - " + flowVars['ORDER_NO'] + " STATUS - " + flowVars['STATUS'] + " ITEM_CODE - " + flowVars['ITEMNO'] + 
+" DESC TYPE - " + flowVars['DESC_TYPE'] + " ITEM QTY - " + flowVars['ORD_QTY'] + " COST - " + flowVars['AVG_COST']);
+
+]]></scripting:script>
+                        </scripting:component>
+                        <scripting:component doc:name="Groovy">
+                            <scripting:script engine="Groovy"><![CDATA[flowVars.ITEM_COST = flowVars.ITEM_COST.toDouble().round(4) * flowVars.PO_QTY;
+flowVars.AMOUNT =  flowVars.ITEM_PRICE * flowVars.PO_QTY
+flowVars.INVTOTAMT = flowVars.INVTOTAMT + flowVars.AMOUNT]]></scripting:script>
+                        </scripting:component>
+                        <db:insert config-ref="Generic_Database_Configuration" doc:name="Insert X_INVOIC Record">
+                            <db:parameterized-query><![CDATA[insert into X_INVOIC (
+SEQUENCE, 
+ORDER_NO, 
+STATUS, 
+ITEM_CODE, 
+DESC_TYPE, 
+ITEM_QTY,
+COST,
+AMOUNT,
+ITEM_PRICE,
+TAX_TABLE,
+DEPT,
+C_COST,
+ITEM_PR_FEX,
+SALES_REP,
+AMOUNT_FEX,
+LAST_COST,
+AVG_COST,
+MEAS_CODE,
+STK_MEAS,
+STK_ITEM_QTY )
+values (
+#[flowVars['ITEM_POS']], 
+#[flowVars['EVRST_ORDER_NO']], 
+'8', 
+#[flowVars['ITEMNO']], 
+#[flowVars['DESC_TYPE']], 
+#[flowVars['PO_QTY']], 
+#[flowVars['EVRST_COST']],
+#[flowVars['AMOUNT']],
+#[flowVars['ITEM_PRICE']],
+#[flowVars['TAX_TABLE']],
+#[flowVars['DEP']],
+#[flowVars['ITEM_COST']],
+#[flowVars['ITEM_PRICE']],
+#[flowVars['SALES_REP']],
+#[flowVars['AMOUNT']],
+#[flowVars['LAST_COST']],
+#[flowVars['EVRST_COST']],
+#[flowVars['MEAS_CODE']],
+#[flowVars['STK_MEAS']],
+#[flowVars['PO_QTY']] )]]></db:parameterized-query>
+                        </db:insert>
+
+                        <set-variable variableName="UPD_INV_TOT" value="#[0]" doc:name="Update Invoice Total"/>
+                        <scripting:component doc:name="Groovy">
+                            <scripting:script engine="Groovy"><![CDATA[flowVars.UPD_INV_TOT = flowVars.INV_TOTAL_AMOUNT + flowVars.amount]]></scripting:script>
+                        </scripting:component>
+                        <db:update config-ref="Generic_Database_Configuration" doc:name="Update Invoices">
+                            <db:parameterized-query><![CDATA[update INVOICES set EXEMPT = #[flowVars.UPD_INV_TOT], INV_AMOUNT = #[flowVars.UPD_INV_TOT], EXEMPT_FEX = #[flowVars.UPD_INV_TOT], INV_AMT_FEX = #[flowVars.UPD_INV_TOT] where STATUS = '8' and DOC_NO = #[flowVars.EVRST_ORDER_NO] and ORDER_NO = #[flowVars.EVRST_ORDER_NO] and CUST_CODE = #[flowVars.CUST_CODE]]]></db:parameterized-query>
+                        </db:update>
+                        <db:update config-ref="Generic_Database_Configuration" doc:name="Update TRANHIST 5036 Record">
+                            <db:parameterized-query><![CDATA[update tranhist set amount = #[flowVars.UPD_INV_TOT] where doc_no  = #[flowVars.EVRST_ORDER_NO] and user_id = 'ITAUT' and func_id = '5036']]></db:parameterized-query>
+                        </db:update>
+                    </otherwise>
+                </choice>
+            </when>
+            <otherwise>
+                <set-variable variableName="EVRST_COST" value="#[flowVars.AVG_COST]" doc:name="EVRST_COST"/>
+                <set-variable variableName="ITEM_PRICE" value="#[message.payload[0]['ORD_AVG_COST']]" doc:name="ITEM_PRICE"/>
+                <set-variable variableName="ITEM_COST" value="#[message.payload[0]['ORD_C_COST']]" doc:name="ITEM_COST (Everest)"/>
+                <set-variable variableName="TAX_TABLE" value="Exempt" doc:name="TAX_TABLE (Everest)"/>
+                <set-variable variableName="MEAS_CODE" value="#[message.payload[0]['SALE_MEAS']]" doc:name="MEAS_CODE (Everest)"/>
+                <set-variable variableName="STK_MEAS" value="#[message.payload[0]['STOCK_MEAS']]" doc:name="STK_MEAS  (Everest)"/>
+                <db:select config-ref="Generic_Database_Configuration" doc:name="Get Customer Record">
+                    <db:parameterized-query><![CDATA[SELECT [ACTIVE]
+      ,[CUST_CODE]
+      ,[NAME]
+      ,[SALESPERSO]
+      ,[PAY_TERMS]
+      ,[CR_LIMIT]
+      ,[DELIV_METH]
+      ,[CUR_CR]
+      ,[CUR_DR]
+      ,[ADV_AVAIL]
+      ,[UNPOST_DR]
+      ,[UNPOST_CR]
+      ,[CUR_BAL_DT]
+      ,[DEP_CODE]
+      ,[CUST_LEVEL]
+      ,[MDESC]
+      ,[ONHOLD]
+      ,[SHIPCODE]
+      ,[CONTCODE]
+      ,[BILLCODE]
+      ,[LI_AMT]
+      ,[LI_DOC]
+      ,[LI_DATE]
+      ,[LR_AMT]
+      ,[LR_DOC]
+      ,[LR_DATE]
+      ,[LP_AMT]
+      ,[LP_DOC]
+      ,[LP_DOC_TYP]
+      ,[LP_DATE]
+      ,[LP_PAYTYPE]
+      ,[LP_REF]
+      ,[NUM_INV]
+      ,[NUM_RET]
+      ,[INV_LIFE]
+      ,[RET_LIFE]
+      ,[DAYS_DUE]
+      ,[POPCUSTCOM]
+      ,[WEB_CUST]
+      ,[FCOMPMTHD]
+      ,[FINRATE]
+      ,[FDAYPAST]
+      ,[FEXCLUDE]
+      ,[FMINBAL]
+      ,[AUTOHLDD]
+      ,[AUTOHLDDA]
+      ,[AUTOHLDC]
+      ,[AUTOHLDCA]
+      ,[HOLDNOTE]
+      ,[CREATED_BY]
+      ,[CREAT_DATE]
+      ,[AO_TERMS]
+      ,[AO_ONACNT]
+      ,[AO_COD]
+      ,[AO_PREPAY]
+      ,[ONACNT]
+      ,[PREPAY]
+      ,[COD]
+      ,[CURRCODE]
+      ,[OP_BAL_FEX]
+      ,[CUR_CR_FEX]
+      ,[CUR_DR_FEX]
+      ,[ADV_AV_FEX]
+      ,[UNPOSTDRFEX]
+      ,[UNPOSTCRFEX]
+      ,[CR_LIMIT_FEX]
+      ,[LI_AMT_FEX]
+      ,[LR_AMT_FEX]
+      ,[LP_AMT_FEX]
+      ,[IS_REMESUR]
+      ,[REM_RATE]
+      ,[REM_DATE]
+      ,[TAX_ID]
+      ,[CUSTCLASS]
+      ,[ONLYBILLTO]
+      ,[ADDSHIPTO]
+      ,[MODSHIPTO]
+      ,[ITMTRKGRP]
+      ,[ITMTRKSEL]
+      ,[QTYPAID_IN]
+      ,[MODBILLTO]
+      ,[PAY_CYCLE]
+      ,[INV_LIFE_FEX]
+      ,[INV_RET_FEX]
+      ,[INV_RET]
+      ,[OP_BAL]
+      ,[SQ_POLICY_CODE]
+      ,[SO_POLICY_CODE]
+      ,[SI_POLICY_CODE]
+      ,[CQ_POLICY_CODE]
+      ,[CO_POLICY_CODE]
+      ,[CM_POLICY_CODE]
+      ,[FULLPAY]
+      ,[HAND_OFF]
+      ,[ALLOW_BCK_ORD]
+      ,[SOURCE_CODE]
+      ,[CATEGORY_CODE]
+      ,[AUTO_HOLD]
+      ,[REQUIREPO]
+      ,[SAVE_CREDIT_CARD_DETAILS]
+      ,[BLIND_SHIPMENT]
+      ,[CUSTOMER_LOGO]
+      ,[JOB_TITLE]
+      ,[EVEREST_MODE_CREATEDIN]
+      ,[IS_LOCKED]
+      ,[LOCK_NOTE]
+      ,[PGID]
+      ,[DW_UPDATE_DATE]
+      ,[DW_UPDATED]
+      ,[WEB_SITE]
+      ,[CUST_PG_PREFERENCE]
+      ,[AUTO_PUT_ON_HOLD]
+      ,[SYNC_STATUS]
+      ,[LOCKOUT_REASON]
+      ,[ANSWER_ENCRYPTION]
+  FROM [CUST] WHERE CUST_CODE = #[flowVars.CUST_CODE]]]></db:parameterized-query>
+                </db:select>
+
+                <set-variable variableName="DEP" value="#[message.payload[0]['DEP_CODE']]" doc:name="DEP (Everest)"/>
+                <set-variable variableName="SALES_REP" value="#[message.payload[0]['SALESPERSO']]" doc:name="SALES_REP"/>
+                <scripting:component doc:name="Groovy">
+                    <scripting:script engine="Groovy"><![CDATA[System.out.println("Inserting Record into Everest X_Invoic Table ...");
+
+System.out.println("SEQUENCE - " + flowVars['ITEM_POS'] + " ORDER_NO - " + flowVars['ORDER_NO'] + " STATUS - " + flowVars['STATUS'] + " ITEM_CODE - " + flowVars['ITEMNO'] + 
+" DESC TYPE - " + flowVars['DESC_TYPE'] + " ITEM QTY - " + flowVars['ORD_QTY'] + " COST - " + flowVars['AVG_COST']);
+
+]]></scripting:script>
+                </scripting:component>
+                <scripting:component doc:name="Groovy">
+                    <scripting:script engine="Groovy"><![CDATA[flowVars.ITEM_COST = flowVars.ITEM_COST.toDouble().round(4) * flowVars.PO_QTY;
+flowVars.AMOUNT =  flowVars.ITEM_PRICE * flowVars.PO_QTY
+flowVars.INVTOTAMT = flowVars.INVTOTAMT + flowVars.amount]]></scripting:script>
+                </scripting:component>
+                <db:insert config-ref="Generic_Database_Configuration" doc:name="Insert X_INVOIC Record">
+                    <db:parameterized-query><![CDATA[insert into X_INVOIC (
+SEQUENCE, 
+ORDER_NO, 
+STATUS, 
+ITEM_CODE, 
+DESC_TYPE, 
+ITEM_QTY,
+COST,
+AMOUNT,
+ITEM_PRICE,
+TAX_TABLE,
+DEPT,
+C_COST,
+ITEM_PR_FEX,
+SALES_REP,
+AMOUNT_FEX,
+LAST_COST,
+AVG_COST,
+MEAS_CODE,
+STK_MEAS,
+STK_ITEM_QTY )
+values (
+#[flowVars['ITEM_POS']], 
+#[flowVars['EVRST_ORDER_NO']], 
+'8', 
+#[flowVars['ITEMNO']], 
+#[flowVars['DESC_TYPE']], 
+#[flowVars['PO_QTY']], 
+#[flowVars['EVRST_COST']],
+#[flowVars['AMOUNT']],
+#[flowVars['ITEM_PRICE']],
+#[flowVars['TAX_TABLE']],
+#[flowVars['DEP']],
+#[flowVars['ITEM_COST']],
+#[flowVars['ITEM_PRICE']],
+#[flowVars['SALES_REP']],
+#[flowVars['AMOUNT']],
+#[flowVars['LAST_COST']],
+#[flowVars['EVRST_COST']],
+#[flowVars['MEAS_CODE']],
+#[flowVars['STK_MEAS']],
+#[flowVars['PO_QTY']] )]]></db:parameterized-query>
+                </db:insert>
+                <set-variable variableName="UPD_INV_TOT" value="#[0]" doc:name="Update Invoice Total"/>
+                <scripting:component doc:name="Groovy">
+                    <scripting:script engine="Groovy"><![CDATA[flowVars.UPD_INV_TOT = flowVars.INV_TOTAL_AMOUNT + flowVars.amount]]></scripting:script>
+                </scripting:component>
+                <db:update config-ref="Generic_Database_Configuration" doc:name="Update Invoices">
+                    <db:parameterized-query><![CDATA[update INVOICES set EXEMPT = #[flowVars.UPD_INV_TOT], INV_AMOUNT = #[flowVars.UPD_INV_TOT], EXEMPT_FEX = #[flowVars.UPD_INV_TOT], INV_AMT_FEX = #[flowVars.UPD_INV_TOT] where STATUS = '8' and DOC_NO = #[flowVars.EVRST_ORDER_NO] and ORDER_NO = #[flowVars.EVRST_ORDER_NO] and CUST_CODE = #[flowVars.CUST_CODE]]]></db:parameterized-query>
+                </db:update>
+                <db:update config-ref="Generic_Database_Configuration" doc:name="Update TRANHIST 5036 Record ">
+                    <db:parameterized-query><![CDATA[update tranhist set amount = #[flowVars.UPD_INV_TOT] where doc_no  = #[flowVars.EVRST_ORDER_NO] and user_id = 'ITAUT' and func_id = '5036']]></db:parameterized-query>
+                </db:update>
+            </otherwise>
+        </choice>
+
+    </sub-flow>
+
+    <sub-flow name="DeleteItemFromSalesOrder">
+        <logger message="Deleting Item #[flowVars.LOCAL_UPC] PO #[flowVars.PO_NO]  " level="INFO" category="DEBUG" doc:name="Logger"/>
+        <choice doc:name="Choice">
+            <when expression="flowVars.EVRST_ITEM_COUNT &gt;1">
+                <logger message="Deleting Record" level="INFO" doc:name="Delete Record"/>
+                <db:select config-ref="Generic_Database_Configuration" doc:name="Get Everest X_INVOIC records">
+                    <db:parameterized-query><![CDATA[select x_invoic.x_invoice_id, x_invoic.sequence, x_invoic.item_code, items.custchar4 from x_invoic, items where x_invoic.ITEM_CODE = items.itemno and x_invoic.ORDER_NO = #[flowVars.EVRST_ORDER_NO] and x_invoic.status = '8' and x_invoic.sales_rep = 'REP40']]></db:parameterized-query>
+                </db:select>
+                <foreach doc:name="For Each">
+                    <set-variable variableName="CUR_DEL_REC" value="#[payload]" doc:name="Current Delete Record"/>
+                    <set-variable variableName="X_INVOICE_ID" value="#[payload.x_invoice_id]" doc:name="X_INVOICE_ID"/>
+                    <set-variable variableName="SEQUENCE" value="#[payload.sequence]" doc:name="SEQUENCE"/>
+                    <set-variable variableName="EVRST_ITEM_CODE" value="#[payload.item_code]" doc:name="Item_Code (Everest)"/>
+                    <db:select config-ref="RPRO_TEST" doc:name="RPRO Lookup">
+                        <db:parameterized-query><![CDATA[select po_item.item_sid as PO_ITEM_SID, INVN_SBS.ITEM_SID as INVN_ITEM_SID from PO_ITEM, invn_sbs where PO_ITEM.item_sid = invn_sbs.item_sid and po_item.po_sid = #[flowVars.PO_SID] and INVN_SBS.LOCAL_UPC = #[flowVars.EVRST_ITEM_CODE]]]></db:parameterized-query>
+                    </db:select>
+                    <choice doc:name="Choice">
+                        <when expression="payload.size()&lt;=0">
+                            <logger message="Deleting x_invoic_id #[flowVars.X_INVOICE_ID] sequence #[flowVars.SEQUENCE] order_no  #[flowVars.EVRST_ORDER_NO] item_code  #[flowVars.EVRST_ITEM_CODE] " level="INFO" doc:name="Logger -DEBUG"/>
+                            <db:delete config-ref="Generic_Database_Configuration" doc:name="Database">
+                                <db:parameterized-query><![CDATA[delete from x_invoic where x_invoice_id = #[flowVars.X_INVOICE_ID] and sequence = #[flowVars.SEQUENCE] and order_no = #[flowVars.EVRST_ORDER_NO] and item_code = #[flowVars.EVRST_ITEM_CODE]]]></db:parameterized-query>
+                            </db:delete>
+                        </when>
+                        <otherwise>
+                            <logger message="Item Exists on PO.  Next Record" level="INFO" category="DEBUG" doc:name="Logger - DEBUG"/>
+                        </otherwise>
+                    </choice>
+                </foreach>
+            </when>
+            <otherwise>
+                <logger message="Bypass Deleting Record " level="INFO" doc:name="Bypass Record"/>
+            </otherwise>
+        </choice>
+        <set-variable variableName="DEL_REC_FLG" value="1" doc:name="DeletedRecordFlag"/>
+    </sub-flow>
+</mule>
